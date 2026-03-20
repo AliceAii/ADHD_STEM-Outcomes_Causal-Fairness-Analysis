@@ -32,11 +32,15 @@ The analysis follows the Standard Fairness Model (SFM):
 
 ## Repository Structure
 ```
-├── 260FP ADHD_hsls.qmd    # Main analysis script (Quarto)
+├── 260FP ADHD_hsls.qmd        # Main analysis script (Quarto)
 ├── r/
-│   ├── cnd-effects.R       # Conditional effect estimation functions (Developed by Plecko)
-│   └── one-step-debiased.R # OSD estimator with cross-fitting (XGBoost) (Developed by Plecko)
-├── f1.png                  # Standard Fairness Model diagram
+│   ├── cnd-effects.R           # Conditional effect estimation functions (Developed by Plecko)
+│   └── one-step-debiased.R     # OSD estimator with cross-fitting (XGBoost) (Developed by Plecko)
+├── Fig1.SFM.png                # Standard Fairness Model diagram
+├── Fig2.tv_decomposition.png   # Total variation decomposition plot
+├── Fig3.cate_heatmap.png       # CATE heatmaps by race × education/SES
+├── Fig4.cde_heatmap.png        # Direct effect heatmaps by race × education/SES
+├── Fig5.overlap_sensitivity.png # Propensity score overlap trimming sensitivity
 └── README.md
 ```
 
