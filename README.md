@@ -32,7 +32,7 @@ The analysis follows the Standard Fairness Model (SFM):
 
 ## Repository Structure
 ```
-├── 260FP ADHD_hsls.qmd        # Main analysis script (Quarto)
+├── ADHD_STEM outcomes_hsls.qmd        # Main analysis script (Quarto)
 ├── r/
 │   ├── cnd-effects.R           # Conditional effect estimation functions (Developed by Plecko)
 │   └── one-step-debiased.R     # OSD estimator with cross-fitting (XGBoost) (Developed by Plecko)
