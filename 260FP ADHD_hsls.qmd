@@ -1,0 +1,787 @@
+---
+title: "260FP ADHD&Sciid"
+author: "Alice Ai"
+format: html
+self-contained: true 
+toc: true
+toc-depth: 4
+editor: visual
+---
+
+## 0. Introduction
+
+Leveraging HSLS:09, this study aims to apply the Causal Fairness Analysis framework (Plecko & Bareinboim, 2024) to decompose the total variation in both high school STEM GPA and science identity between ADHD and non-ADHD students into confounded, indirect, and directed effects, providing a causal perspective of how a neurodevelopmental health condition translates into educational inequality.
+
+::: {style="text-align: center;"}
+![](f1.png){width="300"}
+:::
+
+::: callout-note
+For this study, I focus on the xxx high school students who non missing values in their ADHD status and STEM outcomes.
+
+The final analysis dataset includes variables such as:
+
+-   **X: Protected Attribute**:
+    -   `adhd`: Parent/doctor/school reported ADHD diagnosis (Factor: "Yes", Ref: "No").
+-   **Z: Confounding Variables**:
+    -   `x1sciid`: 9th-grade sicence identity scale (Continuous, standardized mean=0, sd=1).
+    -   `x1race`: Race/ethnicity composite (Factor: "White" (ref), "Amer. Indian/Alaska Native", "Asian", "Black", "Hispanic, no race specified", "Hispanic, race specified", "More than one race", "Native Hawaiian/Pacific Islander").
+    -   `x1sex`: Student's sex (Factor: "Female", Ref: "Male").
+    -   `x1sesq5`: SES quintile (Factor: "First quintile (lowest)" (ref), "Second quintile", "Third quintile", "Fourth quintile", "Fifth quintile (highest)").
+    -   `x1stuedexpct`: Student's highest educational expectation (Factor: "Don't know" (ref), "High School", "Associate's", "Bachelor's", "Master's", "PhD/Professional").
+-   **W: Mediators** (all measured in 11th grade / spring 2012):
+    -   `s2sclub`: Science club participation since fall 2009 (Factor: "Yes", Ref: "No").
+    -   `s2alg2m12`: Taking Algebra II in spring 2012 (Factor: "Yes", Ref: "No").
+    -   `s2geom12`: Taking Geometry in spring 2012 (Factor: "Yes", Ref: "No").
+    -   `s2precalc12`: Taking Pre-calculus or Analysis and Functions in spring 2012 (Factor: "Yes", Ref: "No").
+-   **Y: Outcome Variables**:
+    -   `x2sciid`: 11th-grade science identity scale (Continuous, standardized mean=0, sd=1).
+    -   `x3tgpastem`: High school STEM GPA (Continuous, 0-4 scale, standardized).
+
+**Missing Values:**
+
+All negative codes (-1, -6, -7, -8, -9) are recoded to `NA`. Code -7 (Item legitimate skip/NA) applies to math course variables for students not enrolled in a math course in spring 2012. Code -8 indicates unit non-response. Code -9 indicates item-level missing.
+:::
+
+## 1. Data Preparation
+
+### 1.1 Load Packages & Raw Data
+
+```{r, eval=FALSE, message=FALSE, warning=FALSE}
+rm(list=ls())
+#Load Packages 
+library(haven)
+library(tidyverse)
+library(dplyr)
+library(forcats)
+library(skimr)
+library(flextable)
+library(table1)
+library(knitr)
+library(patchwork)
+library(car)
+library(naniar)
+library(mice)
+
+u13student <- read_sav("/Users/aishuhan/Desktop/C260 FP/Data/u13student.sav")
+
+raw <- u13student %>%
+  dplyr::select(
+    STU_ID, SCH_ID, W3W1W2STU, #index and weights # W1SCHOOL in school-level data
+    P1ADHD, # X protected attribute
+    X1SCIID, X1RACE, X1SEX, X1SESQ5, X1STUEDEXPCT, # Z confounding variables
+    S2SCLUB, S2ALG2M12, S2GEOM12, S2PRECALC12, # W mediator (sciclub, taking algebra II, geometry, pre-calculus)
+    X2SCIID, X3TGPASTEM) # Y science identity, and high school STEM GPA
+```
+
+### 1.2 Data Preparation
+
+```{r, eval=FALSE, message=FALSE, warning=FALSE}
+data <- raw %>%
+  mutate(
+    ##### X: Protected attribute #####
+    # P1ADHD: ADHD diagnosis
+    adhd = case_when(P1ADHD == 0 ~ 0,P1ADHD == 1 ~ 1,
+      P1ADHD %in% c(-8, -9) ~ NA_real_),
+    adhd = factor(adhd, levels = c(0, 1), labels = c("No", "Yes")),
+    
+    ##### Z: Confounding variables #####
+    # X1SCIID: Baseline Science identity scale (continuous, standardized mean=0, sd=1)
+    x1sciid = if_else(X1SCIID %in% c(-8, -9), NA_real_, as.numeric(X1SCIID)),
+    
+    # X1RACE: Race/ethnicity composite
+    x1race = case_when(
+      X1RACE == 2 ~ "Asian",
+      X1RACE == 3 ~ "Black",
+      X1RACE %in% c(4, 5) ~ "Hispanic/Latino",                         
+      X1RACE == 6 ~ "More than one race",
+      X1RACE %in% c(1, 7) ~ "Amer. Indian/Alaska Native/Pacific Islander",  # combine small groups
+      X1RACE == 8 ~ "White",
+      X1RACE == -9 ~ NA_character_
+    ),
+    x1race = factor(x1race, levels = c("White",  # ref
+                                         "Amer. Indian/Alaska Native/Pacific Islander",
+                                         "Asian",
+                                         "Black",
+                                         "Hispanic/Latino",
+                                         "More than one race")),
+    
+    # X1SEX: Student's sex (1=Male, 2=Female)
+    x1sex = case_when(X1SEX == 1 ~ 0, X1SEX == 2 ~ 1, X1SEX == -9 ~ NA_real_),
+    x1sex = factor(x1sex, levels = c(0, 1), labels = c("Male", "Female")),
+    
+    # X1SESQ5: SES quintile (1-5)
+    x1sesq5 = case_when(X1SESQ5 %in% 1:5 ~ X1SESQ5, X1SESQ5 == -8 ~ NA_real_),
+    x1sesq5 = factor(x1sesq5, levels = 1:5, 
+                      labels = c("First quintile (lowest)", 
+                                 "Second quintile", 
+                                 "Third quintile", 
+                                 "Fourth quintile", 
+                                 "Fifth quintile (highest)")),
+    
+    # X1STUEDEXPCT: Educational expectations
+    x1stuedexpct = case_when(
+      X1STUEDEXPCT %in% c(1, 2) ~ "High School",         
+      X1STUEDEXPCT %in% c(3, 4) ~ "Associate's",         
+      X1STUEDEXPCT %in% c(5, 6) ~ "Bachelor's",           
+      X1STUEDEXPCT %in% c(7, 8) ~ "Master's",             
+      X1STUEDEXPCT %in% c(9, 10) ~ "PhD/Professional",    
+      X1STUEDEXPCT == 11 ~ "Don't know",                 
+      X1STUEDEXPCT == -8 ~ NA_character_
+    ),
+    x1stuedexpct = factor(x1stuedexpct, levels = c("Don't know",  # ref
+                                                     "High School", 
+                                                     "Associate's", 
+                                                     "Bachelor's", 
+                                                     "Master's", 
+                                                     "PhD/Professional")),
+    
+    ##### W: Mediators #####
+    # S2SCLUB: Science club participation (0=No, 1=Yes)
+    s2sclub = case_when(S2SCLUB == 0 ~ 0, S2SCLUB == 1 ~ 1, S2SCLUB %in% c(-8, -9) ~ NA_real_),
+    s2sclub = factor(s2sclub, levels = c(0, 1), labels = c("No", "Yes")),
+    
+    # S2ALG2M12: Taking Algebra II spring 2012 (0=No, 1=Yes)
+    s2alg2m12 = case_when(S2ALG2M12 == 0 ~ 0, S2ALG2M12 == 1 ~ 1, S2ALG2M12 %in% c(-7, -8, -9) ~ NA_real_),
+    s2alg2m12 = factor(s2alg2m12, levels = c(0, 1), labels = c("No", "Yes")),
+    
+    # S2GEOM12: Taking Geometry spring 2012 (0=No, 1=Yes)
+    s2geom12 = case_when(S2GEOM12 == 0 ~ 0, S2GEOM12 == 1 ~ 1, S2GEOM12 %in% c(-7, -8, -9) ~ NA_real_),
+    s2geom12 = factor(s2geom12, levels = c(0, 1), labels = c("No", "Yes")),
+    
+    # S2PRECALC12: Taking Pre-calculus spring 2012 (0=No, 1=Yes)
+    s2precalc12 = case_when(S2PRECALC12 == 0 ~ 0, S2PRECALC12 == 1 ~ 1, S2PRECALC12 %in% c(-7, -8, -9) ~ NA_real_),
+    s2precalc12 = factor(s2precalc12, levels = c(0, 1), labels = c("No", "Yes")),
+    
+    ##### Y: Outcomes #####
+    # X2SCIID: 11th-grade science identity scale (continuous)
+    x2sciid = if_else(X2SCIID %in% c(-8, -9), NA_real_, as.numeric(X2SCIID)),
+    
+    # X3TGPASTEM: HS STEM GPA (continuous 0-4, standardized)
+    x3tgpastem = case_when(X3TGPASTEM >= 0 ~ as.numeric(X3TGPASTEM), X3TGPASTEM %in% c(-1, -6, -8, -9) ~ NA_real_),
+    x3tgpastem_z = as.numeric(scale(x3tgpastem)))
+```
+
+### 1.3 Define SFM & Create Two Analytic Datasets
+
+```{r, eval=FALSE, message=FALSE, warning=FALSE}
+X <- "adhd"
+Z <- c("x1sciid", "x1race", "x1sex", "x1sesq5", "x1stuedexpct")
+W <- c("s2sclub", "s2alg2m12", "s2geom12", "s2precalc12")
+
+# Dataset 1: Science Identity
+Y1 <- "x2sciid"
+vars.sciid <- c(X, Z, W, Y1)
+
+data.sciid <- data %>%
+  filter(!is.na(adhd), !is.na(x2sciid)) %>%
+  dplyr::select(STU_ID, SCH_ID, W3W1W2STU, all_of(vars.sciid))
+
+# Dataset 2: STEM GPA
+Y2 <- "x3tgpastem"
+vars.stemgpa <- c(X, Z, W, Y2)
+
+data.stemgpa <- data %>%
+  filter(!is.na(adhd), !is.na(x3tgpastem)) %>%
+  dplyr::select(STU_ID, SCH_ID, W3W1W2STU, all_of(vars.stemgpa))
+
+# Missingness check
+bind_rows(
+  data.sciid %>%
+    summarise(across(all_of(vars.sciid), ~ round(100 * mean(is.na(.)), 1))) %>%
+    pivot_longer(everything(), names_to = "variable", values_to = "pct_missing") %>%
+    mutate(dataset = "Science Identity"),
+  data.stemgpa %>%
+    summarise(across(all_of(vars.stemgpa), ~ round(100 * mean(is.na(.)), 1))) %>%
+    pivot_longer(everything(), names_to = "variable", values_to = "pct_missing") %>%
+    mutate(dataset = "STEM GPA")
+) %>%
+  pivot_wider(names_from = dataset, values_from = pct_missing) %>%
+  arrange(desc(`Science Identity`)) %>%
+  knitr::kable(caption = "Percent Missing by Variable and Dataset")
+```
+
+### 1.4 MICE Imputation
+
+```{r, eval=FALSE, message=FALSE, warning=FALSE}
+run_mice <- function(df, analysis.vars, X, Z, W, Y, m = 10, maxit = 10, seed = 2026) {
+  
+  imp.data <- df %>% dplyr::select(all_of(analysis.vars))
+  ini <- mice(imp.data, maxit = 0, print = FALSE)
+  
+  methods <- ini$method
+  methods[X]              <- ""          # adhd: complete (filtered)
+  methods[Y]              <- ""          # outcome: complete (filtered)
+  methods["x1sciid"]      <- "pmm"      # continuous
+  methods["x1race"]       <- "polyreg"  # unordered categorical
+  methods["x1sex"]        <- "logreg"   # binary
+  methods["x1sesq5"]      <- "polr"     # ordered categorical
+  methods["x1stuedexpct"] <- "polyreg"  # unordered categorical
+  methods[W]              <- "logreg"   # all binary mediators
+  
+  set.seed(seed)
+  mice(imp.data, m = m, maxit = maxit, method = methods, print = FALSE)
+}
+
+imp.sciid   <- run_mice(data.sciid, vars.sciid, X, Z, W, Y1)
+imp.stemgpa <- run_mice(data.stemgpa, vars.stemgpa, X, Z, W, Y2)
+```
+
+### 1.5 Diagnostices and Store the data
+
+```{r, eval=FALSE, message=FALSE, warning=FALSE}
+plot(imp.sciid, layout = c(3, 3))
+plot(imp.stemgpa, layout = c(3, 3))
+densityplot(imp.sciid, ~ x1sciid, main = "Science Identity: x1sciid")
+densityplot(imp.sciid, ~ x1sciid, main = "Science Identity: x1sciid")
+
+assemble_imp <- function(imp, df) {
+  ids <- df %>% dplyr::select(STU_ID, W3W1W2STU)
+  complete(imp, action = "long", include = TRUE) %>%
+    bind_cols(ids %>% slice(rep(1:n(), times = imp$m + 1)))
+}
+
+# Dataset 1: Science Identity
+data.sciid.imp  <- as.mids(data.sciid.long)
+data.sciid.complete <- complete(data.sciid.imp, 1)
+
+# Dataset 2: STEM GPA
+data.stemgpa.imp  <- as.mids(data.stemgpa.long)
+data.stemgpa.complete <- complete(data.stemgpa.imp, 1)
+
+out <- "/Users/aishuhan/Desktop/C260 FP/Data/"
+
+saveRDS(data.sciid.imp, paste0(out, "adhd_sciid_mids.rds"))
+saveRDS(data.stemgpa.imp, paste0(out, "adhd_stemgpa_mids.rds"))
+saveRDS(data.sciid.complete, paste0(out, "adhd_sciid1.rds"))
+saveRDS(data.stemgpa.complete, paste0(out, "adhd_stemgpa1.rds"))
+```
+
+```{r, message=FALSE, warning=FALSE}
+rm(list=ls())
+library(tidyverse)
+library(tableone)
+library(table1)
+library(cobalt) #for SMD
+library(knitr)
+library(flextable)
+library(ggplot2)
+library(patchwork)
+#devtools::install_github("dplecko/CFA")
+library(faircause)
+library(grf)
+library(sensemakr)
+library(zeallot)  # for c(X, Z, W, Y) %<-% 
+library(xgboost)
+library(patchwork)
+library(data.table)
+
+out <- "/Users/aishuhan/Desktop/C260 FP/Data/"
+data.sciid.complete   <- readRDS(paste0(out, "adhd_sciid1.rds"))
+data.stemgpa.complete <- readRDS(paste0(out, "adhd_stemgpa1.rds"))
+data.sciid.imp        <- readRDS(paste0(out, "adhd_sciid_mids.rds"))
+data.stemgpa.imp      <- readRDS(paste0(out, "adhd_stemgpa_mids.rds"))
+
+# Scale GPA
+data.stemgpa.complete <- data.stemgpa.complete %>% mutate(x3tgpastem = as.numeric(scale(x3tgpastem)))
+
+# Define SFM 
+X <- "adhd"
+Z <- c("x1sciid", "x1race", "x1sex", "x1sesq5", "x1stuedexpct")
+W <- c("s2sclub", "s2alg2m12", "s2geom12", "s2precalc12")
+Y1 <- "x2sciid"
+Y2 <- "x3tgpastem"
+
+# Convert factors to numeric for faircause
+prep_faircause <- function(df) {
+  df %>%
+    mutate(
+      adhd        = as.numeric(adhd == "Yes"),
+      x1sex       = as.numeric(x1sex == "Female"),
+      s2sclub     = as.numeric(s2sclub == "Yes"),
+      s2alg2m12   = as.numeric(s2alg2m12 == "Yes"),
+      s2geom12    = as.numeric(s2geom12 == "Yes"),
+      s2precalc12 = as.numeric(s2precalc12 == "Yes"),
+      across(c(x1race, x1sesq5, x1stuedexpct), ~ as.numeric(as.factor(.)))
+    ) %>%
+    filter(complete.cases(.))
+}
+
+```
+
+## 2. Descriptive Analysis
+
+```{r, message=FALSE, warning=FALSE}
+# --- 2a.Science Identity desc ---
+table1(~ x1sciid + x1race + x1sex + x1sesq5 + x1stuedexpct +
+         s2sclub + s2alg2m12 + s2geom12 + s2precalc12 + x2sciid | adhd, data = data.sciid.complete, overall = "Total")
+
+# --- 2b. STEM GPA desc ---
+table1(~ x1sciid + x1race + x1sex + x1sesq5 + x1stuedexpct +
+         s2sclub + s2alg2m12 + s2geom12 + s2precalc12 + x3tgpastem | adhd, data = data.stemgpa.complete, overall = "Total")
+
+# --- 2c. Check Covariate Balance: SMD with Love Plot (cobalt) ---
+covars <- c("x1sciid", "x1race", "x1sex", "x1sesq5", "x1stuedexpct", "s2sclub", "s2alg2m12", "s2geom12", "s2precalc12")
+
+bal_sciid <- bal.tab(
+  x            = data.sciid.complete[, covars],
+  treat        = data.sciid.complete$adhd,
+  s.d.denom    = "pooled",
+  m.threshold  = .10,
+  binary       = "std",
+  continuous   = "std",
+  un           = TRUE)
+bal_sciid
+
+bal_stemgpa <- bal.tab(
+  x            = data.stemgpa.complete[, covars],
+  treat        = data.stemgpa.complete$adhd,
+  s.d.denom    = "pooled",
+  m.threshold  = .10,
+  binary       = "std",
+  continuous   = "std",
+  un           = TRUE)
+bal_stemgpa
+```
+
+## 3. TV Decomposition
+
+```{r, message=FALSE, warning=FALSE}
+# --- 3a. Prepare numeric data --- 
+fc.sciid <- prep_faircause(data.sciid.complete)
+fc.stemgpa <- prep_faircause(data.stemgpa.complete)
+
+# --- 3b. Run fairness_cookbook ---
+set.seed(612)
+fcb.sciid <- fairness_cookbook(data = as.data.frame(fc.sciid), X = X, Z = Z, W = W, Y = Y1, x0 = 0, x1 = 1, method = "debiasing") 
+  #semiparametric estimation (RF) with cross-fitting (doubly robust) 
+
+set.seed(612)
+fcb.stemgpa <- fairness_cookbook(data = as.data.frame(fc.stemgpa), X = X, Z = Z, W = W, Y = Y2, x0 = 0, x1 = 1, method = "debiasing")
+
+# --- 3c. Combine and format results ---
+res <- rbind(cbind(summary(fcb.sciid)$measures, Dataset = "Science Identity"),
+             cbind(summary(fcb.stemgpa)$measures, Dataset = "STEM GPA"))
+res <- res[res$measure %in% c("tv", "ctfde", "ctfse", "ctfie"), ]
+
+# flip signs of IE and SE for interpretability
+res[res$measure %in% c("ctfse", "ctfie"), ]$value <-  -res[res$measure %in% c("ctfse", "ctfie"), ]$value
+
+xlabz <- c(ctfse = "Confounded", ctfie = "Indirect", ctfde = "Direct", tv = "Total Variation")
+res$measure <- factor(res$measure, levels = c("ctfse", "ctfie", "ctfde", "tv"))
+
+print(res)
+
+# --- 3d. Plot TV decomposition ---
+tv_barplot <- ggplot(res, aes(x = measure, y = value, fill = Dataset, ymin = value - 1.96 * sd, ymax = value + 1.96 * sd)) +
+  geom_bar(position = "dodge", stat = "identity", linewidth = 1.2, color = "black") +
+  theme_minimal() +
+  geom_errorbar(aes(group = Dataset), position = position_dodge(0.9), color = "black", width = 0.25) +
+  theme(legend.position = "inside",
+    legend.position.inside = c(0.15, 0.25),
+    legend.box.background = element_rect(),
+    legend.text = element_text(size = 11),
+    axis.text = element_text(size = 11),
+    axis.title.x = element_text(size = 11),
+    title = element_text(size = 11)) +
+  scale_x_discrete(labels = xlabz) +
+  xlab("Causal Fairness Measure") + ylab("Value") +
+  scale_fill_manual(values = c("Science Identity" = "#2774AE", "STEM GPA" = "#FFD100")) +
+  geom_hline(yintercept = 0, color = "gray", linetype = "dashed")
+
+#ggsave("Fig1.tv_decomposition.png", tv_barplot, width = 8, height = 4, dpi = 300)
+
+```
+
+## 4. CATE Heterogeneous Treatment Effects (Total CATE via grf)
+
+```{r, message=FALSE, warning=FALSE}
+# --- 4a. Fit causal forests for total CATE ---
+
+# Label definitions
+race_labs  <- c("White", "AI/AN/PI", "Asian", "Black", "Hispanic/Latino", "Multiracial")
+edexp_labs <- c("Don't know", "High School", "Associate's", "Bachelor's", "Master's", "PhD/Prof")
+ses_labs   <- c("Q1 (Lowest)", "Q2", "Q3", "Q4", "Q5 (Highest)")
+
+# science identity
+het_vars <- c("x1sciid", "x1race", "x1sex", "x1sesq5", "x1stuedexpct")
+# create covariate matrix 
+X_mat_sciid <- as.matrix(fc.sciid[, het_vars])
+set.seed(612)
+cf.sciid <- causal_forest(X_mat_sciid, fc.sciid[[Y1]], fc.sciid$adhd, num.trees = 2000)
+
+X_mat_stemgpa <- as.matrix(fc.stemgpa[, het_vars])
+set.seed(612)
+cf.stemgpa <- causal_forest(X_mat_stemgpa, fc.stemgpa[[Y2]], fc.stemgpa$adhd, num.trees = 2000)
+
+# --- 4b. Average Treatement Effect (ATE) --- 
+ate.sciid <- average_treatment_effect(cf.sciid)
+ate.stemgpa <- average_treatment_effect(cf.stemgpa)
+
+tibble(Dataset = c("Science Identity", "STEM GPA"), ATE = round(c(ate.sciid[1], ate.stemgpa[1]), 4),
+  SE  = round(c(ate.sciid[2], ate.stemgpa[2]), 4),
+  CI_lower = round(c(ate.sciid[1] - 1.96 * ate.sciid[2], ate.stemgpa[1] - 1.96 * ate.stemgpa[2]), 4),
+  CI_upper = round(c(ate.sciid[1] + 1.96 * ate.sciid[2],  ate.stemgpa[1] + 1.96 * ate.stemgpa[2]), 4)
+) %>% kable(caption = "Average Treatment Effect of ADHD (Causal Forest)")
+
+# --- 4c. Variable Importance ---
+vimp.sciid <- variable_importance(cf.sciid)
+vimp.stemgpa <- variable_importance(cf.stemgpa)
+
+bind_rows(tibble(variable = het_vars, importance = round(as.numeric(vimp.sciid), 4), 
+                 Dataset = "Science Identity"),
+  tibble(variable = het_vars, importance = round(as.numeric(vimp.stemgpa), 4), 
+                 Dataset = "STEM GPA")) %>%
+  pivot_wider(names_from = Dataset, values_from = importance) %>%
+  kable(caption = "Causal Forest Variable Importance (Total CATE)")
+
+# --- 4d. CATE by subgroup --- 
+cate_by_group <- function(var, label, factor_labs = NULL) {
+  df <- bind_rows(
+    tibble(cate = cf.sciid$predictions, grp = fc.sciid[[var]], Dataset = "Science Identity"),
+    tibble(cate = cf.stemgpa$predictions, grp = fc.stemgpa[[var]], Dataset = "STEM GPA")
+  )
+  if (!is.null(factor_labs)) df <- df %>% mutate(grp = factor(grp, labels = factor_labs))
+  df %>%
+    group_by(Dataset, grp) %>%
+    summarise(mean_cate = round(mean(cate), 4), sd_cate = round(sd(cate), 4),
+              n = n(), .groups = "drop") %>%
+    rename(!!label := grp) %>%
+    kable(caption = paste("Mean CATE by", label))
+}
+
+cate_by_group("x1sex", "Sex", c("Male", "Female"))
+cate_by_group("x1race", "Race", c("White", "AI/AN/PI", "Asian", "Black", "Hispanic/Latino", "Multiracial"))
+cate_by_group("x1stuedexpct", "Educational Expectations",
+              c("Don't know", "High School", "Associate's", "Bachelor's", "Master's", "PhD/Professional"))
+cate_by_group("x1sesq5", "SES Quintile", c("Q1 (Lowest)", "Q2", "Q3", "Q4", "Q5 (Highest)"))
+
+# --- 4e. CATE Heatmap by two grouping ---
+plot_cate_heatmap <- function(cf, fc, var1, var2, labs1, labs2, 
+                              xlab_text, ylab_text, title_text, fill_limits = NULL) {
+  tibble(cate = cf$predictions, v1 = fc[[var1]], v2 = fc[[var2]]) %>%
+    mutate(v1 = factor(v1, labels = labs1), v2 = factor(v2, labels = labs2)) %>%
+    group_by(v1, v2) %>%
+    summarise(mean_cate = mean(cate), 
+              ci_lower = mean(cate) - 1.96 * sd(cate) / sqrt(n()),
+              ci_upper = mean(cate) + 1.96 * sd(cate) / sqrt(n()), n = n(), .groups = "drop") %>%
+    ggplot(aes(x = v2, y = v1, fill = mean_cate)) +
+    geom_tile(color = "white", linewidth = 1.5) +
+    geom_text(aes(label = sprintf("%.3f", mean_cate)), size = 3.5, fontface = "bold", vjust = -0.6) +
+    geom_text(aes(label = paste0("[", sprintf("%.3f", ci_lower), ", ", 
+                                 sprintf("%.3f", ci_upper), "]")),size = 3, vjust = 0.7, color = "gray30") +
+    geom_text(aes(label = paste0("n=", n)),size = 3, vjust = 2.0, color = "gray40") +
+    scale_fill_gradient2(low = "#6BAED6", mid = "#F7F7F7", high = "#B2182B",
+                         midpoint = 0, name = "Total CATE\n(SD units)", limits = fill_limits) +
+    theme_minimal(base_size = 10) +
+    theme(axis.text = element_text(size = 10),
+          plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+          panel.grid = element_blank()) +
+    xlab(xlab_text) + ylab(ylab_text) + ggtitle(title_text)
+}
+
+lim_sciid   <- c(-0.17, 0.10)
+lim_stemgpa <- c(-0.70, 0.00)
+
+# Science Identity: Total CATE by Race and Educational Expectations
+p1 <- plot_cate_heatmap(cf.sciid, fc.sciid, "x1race", "x1stuedexpct", race_labs, edexp_labs,
+                         "", "", "", fill_limits = lim_sciid) + xlab(NULL)
+# Science Identity: Total CATE by Race and SES Quintile
+p2 <- plot_cate_heatmap(cf.sciid, fc.sciid, "x1race", "x1sesq5", race_labs, ses_labs,
+                         "", "", "", fill_limits = lim_sciid) + xlab(NULL) + ylab(NULL)
+# STEM GPA: Total CATE by Race and Educational Expectations
+p3 <- plot_cate_heatmap(cf.stemgpa, fc.stemgpa, "x1race", "x1stuedexpct", race_labs, edexp_labs,
+                         "Educational Expectations", "", "", fill_limits = lim_stemgpa)
+# STEM GPA: Total CATE by Race and SES Quintile
+p4 <- plot_cate_heatmap(cf.stemgpa, fc.stemgpa, "x1race", "x1sesq5", race_labs, ses_labs,
+                         "SES Quintile", "", "", fill_limits = lim_stemgpa) + ylab(NULL)
+
+row1 <- (p1 | p2) + plot_layout(guides = "collect")
+row2 <- (p3 | p4) + plot_layout(guides = "collect")
+cate.heatmap <- row1 / row2 + plot_annotation(
+    #title = "Total CATE by Race and Educational Expectations/SES Quintile",
+    #subtitle = "Top: Science Identity  |  Bottom: STEM GPA",
+    theme = theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+      plot.subtitle = element_text(hjust = 0.5, size = 12)))
+
+#ggsave("Fig2.cate_heatmap.png", cate.heatmap, width = 16, height = 8, dpi = 500)
+```
+
+## 5. Crf-DE Heterogeneity Analysis (Counterfactual Direct Effect Heterogeneity via OSD)
+
+```{r, message=FALSE, warning=FALSE}
+# --- 5a. Source Drago's functions ---
+source("r/cnd-effects.R")
+source("r/one-step-debiased.R") #cross-fitting with XGBoost
+
+# --- 5b. Custom cmbn_E for HSLS data ---
+cmbn_E_hsls <- function(sel_covs) {
+  covs <- list(
+    x1race = list(
+      `White`            = list(x1race = 1),
+      `AI/AN/PI`         = list(x1race = 2),
+      `Asian`            = list(x1race = 3),
+      `Black`            = list(x1race = 4),
+      `Hispanic/Latino`  = list(x1race = 5),
+      `Multiracial`      = list(x1race = 6)),
+    x1stuedexpct = list(
+      `Don't know`   = list(x1stuedexpct = 1),
+      `High School`  = list(x1stuedexpct = 2),
+      `Associate's`  = list(x1stuedexpct = 3),
+      `Bachelor's`   = list(x1stuedexpct = 4),
+      `Master's`     = list(x1stuedexpct = 5),
+      `PhD/Prof`     = list(x1stuedexpct = 6)),
+    x1sex = list(
+      `Male`   = list(x1sex = 0),
+      `Female` = list(x1sex = 1)),
+    x1sesq5 = list(
+      `Q1 (Lowest)`  = list(x1sesq5 = 1),
+      `Q2`           = list(x1sesq5 = 2),
+      `Q3`           = list(x1sesq5 = 3),
+      `Q4`           = list(x1sesq5 = 4),
+      `Q5 (Highest)` = list(x1sesq5 = 5))
+  )
+  covs <- covs[sel_covs]
+  grid <- expand.grid(lapply(covs, function(x) seq_along(x)))
+  E_nms <- list()
+  E_lst <- list()
+  for (i in seq_len(nrow(grid))) {
+    block <- c()
+    nm <- c()
+    for (j in seq_len(ncol(grid))) {
+      block <- c(block, covs[[j]][grid[i, j]][[1]])
+      nm    <- c(nm, names(covs[[j]][grid[i, j]]))
+    }
+    E_nms[[i]] <- nm
+    E_lst[[i]] <- block
+  }
+  E_nms <- data.frame(do.call(rbind, E_nms))
+  names(E_nms) <- sel_covs
+  attr(E_lst, "E_names") <- E_nms
+  E_lst
+}
+
+# Count n per subgroup
+count_n_single <- function(df, group_var, group_val) {
+  sum(df[[group_var]] == group_val)
+}
+
+# --- 5c. Run all CDE analyses for one outcome ---
+run_cde_analysis <- function(fc_data, Y_var, seed_val) {
+  set.seed(seed_val)
+  cndE <- cnd_effect(data = as.data.frame(fc_data),
+                     X = X, Z = Z, W = W, Y = Y_var, method = "osd")
+  
+  run_single <- function(var, n_levels) {
+    res <- infer(cndE, cmbn_E_hsls(var), effect = "DE")
+    res$n <- sapply(seq_len(n_levels), function(v) count_n_single(fc_data, var, v))
+    res
+  }
+  
+  run_cross <- function(vars, labs_list) {
+    res <- infer(cndE, cmbn_E_hsls(vars), effect = "DE")
+    n_df <- fc_data %>%
+      mutate(v1 = factor(.data[[vars[1]]], labels = labs_list[[1]]),
+             v2 = factor(.data[[vars[2]]], labels = labs_list[[2]])) %>%
+      group_by(v1, v2) %>%
+      summarise(n = n(), .groups = "drop")
+    names(n_df) <- c(vars, "n")
+    res %>% left_join(n_df, by = vars)
+  }
+  
+  list(
+    cndE          = cndE,
+    by_race       = run_single("x1race", 6),
+    by_edexp      = run_single("x1stuedexpct", 6),
+    by_ses        = run_single("x1sesq5", 5),
+    by_race_edexp = run_cross(c("x1race", "x1stuedexpct"), list(race_labs, edexp_labs)),
+    by_race_ses   = run_cross(c("x1race", "x1sesq5"), list(race_labs, ses_labs))
+  )
+}
+
+# --- 5d. Science Identity ---
+cde_sciid <- run_cde_analysis(fc.sciid, Y1, seed_val = 612)
+cde_sciid$by_race
+cde_sciid$by_edexp
+cde_sciid$by_ses
+cde_sciid$by_race_edexp
+cde_sciid$by_race_ses
+
+# --- 5e. STEM GPA ---
+cde_stemgpa <- run_cde_analysis(fc.stemgpa, Y2, seed_val = 612)
+cde_stemgpa$by_race
+cde_stemgpa$by_edexp
+cde_stemgpa$by_ses
+cde_stemgpa$by_race_edexp
+cde_stemgpa$by_race_ses
+
+# --- 5f. CDE Heatmap ---
+plot_cde_heatmap <- function(cde_data, var1, var2, labs1, labs2,
+                              xlab_text, ylab_text, title_text, fill_limits = NULL) {
+  df <- cde_data %>%
+    mutate(
+      v1 = factor(.data[[var1]], levels = labs1),
+      v2 = factor(.data[[var2]], levels = labs2),
+      ci_lower = effect - 1.96 * sd,
+      ci_upper = effect + 1.96 * sd
+    )
+  
+  ggplot(df, aes(x = v2, y = v1, fill = effect)) +
+    geom_tile(color = "white", linewidth = 1.5) +
+    geom_text(aes(label = sprintf("%.3f", effect)),
+              size = 3.5, fontface = "bold", vjust = -0.6) +
+    geom_text(aes(label = paste0("[", sprintf("%.3f", ci_lower), ", ",
+                                 sprintf("%.3f", ci_upper), "]")),
+              size = 3, vjust = 0.7, color = "gray30") +
+    geom_text(aes(label = paste0("n=", n)),
+              size = 3, vjust = 2.0, color = "gray40") +
+    scale_fill_gradient2(low = "#6BAED6", mid = "#F7F7F7", high = "#B2182B",
+                         midpoint = 0, name = "Conditional DE\n(SD units)",
+                         limits = fill_limits) +
+    theme_minimal(base_size = 10) +
+    theme(axis.text = element_text(size = 10),
+          plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+          panel.grid = element_blank()) +
+    xlab(xlab_text) + ylab(ylab_text) + ggtitle(title_text)
+}
+
+cde_lim_sciid   <- c(-1.80, 2.30)
+cde_lim_stemgpa <- c(-1.80, 0.40)
+
+# Science Identity
+q1 <- plot_cde_heatmap(cde_sciid$by_race_edexp, "x1race", "x1stuedexpct", race_labs, edexp_labs,
+                        "", "", "", fill_limits = cde_lim_sciid) + xlab(NULL)
+q2 <- plot_cde_heatmap(cde_sciid$by_race_ses, "x1race", "x1sesq5", race_labs, ses_labs,
+                        "", "", "", fill_limits = cde_lim_sciid) + xlab(NULL) + ylab(NULL)
+
+# STEM GPA
+q3 <- plot_cde_heatmap(cde_stemgpa$by_race_edexp, "x1race", "x1stuedexpct", race_labs, edexp_labs,
+                        "Educational Expectations", "", "", fill_limits = cde_lim_stemgpa)
+q4 <- plot_cde_heatmap(cde_stemgpa$by_race_ses, "x1race", "x1sesq5", race_labs, ses_labs,
+                        "SES Quintile", "", "", fill_limits = cde_lim_stemgpa) + ylab(NULL)
+
+
+row1_cde <- (q1 | q2) + plot_layout(guides = "collect")
+row2_cde <- (q3 | q4) + plot_layout(guides = "collect")
+cde.heatmap <- row1_cde / row2_cde + plot_annotation(
+    theme = theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+      plot.subtitle = element_text(hjust = 0.5, size = 12)))
+
+#ggsave("Fig3.cde_heatmap.png", cde.heatmap, width = 16, height = 8, dpi = 500)
+```
+
+## 6. Sensitivity Analysis
+
+### 6.1 Sensitivity to Unmeasured Confounding (sensemakr)
+
+```{r, message=FALSE, warning=FALSE}
+ols.sciid   <- lm(reformulate(c(X, Z, W), Y1), data = fc.sciid)
+ols.stemgpa <- lm(reformulate(c(X, Z, W), Y2), data = fc.stemgpa)
+
+sens.sciid <- sensemakr(model = ols.sciid, treatment = "adhd",
+    benchmark_covariates = Z, kd = 1:3)
+
+sens.stemgpa <- sensemakr(model = ols.stemgpa, treatment = "adhd",
+    benchmark_covariates = Z, kd = 1:3)
+
+cat("=== Science Identity ===\n")
+summary(sens.sciid)
+
+cat("\n=== STEM GPA ===\n")
+summary(sens.stemgpa)
+
+# Contour plots
+plot(sens.sciid, main = "Sensitivity: Science Identity")
+plot(sens.stemgpa, main = "Sensitivity: STEM GPA")
+
+sens_summary <- tibble(
+  Outcome = c("Science Identity", "STEM GPA"),
+  Estimate = c(coef(summary(ols.sciid))["adhd", "Estimate"],
+               coef(summary(ols.stemgpa))["adhd", "Estimate"]),
+  SE = c(coef(summary(ols.sciid))["adhd", "Std. Error"],
+         coef(summary(ols.stemgpa))["adhd", "Std. Error"]),
+  t_value = c(coef(summary(ols.sciid))["adhd", "t value"],
+              coef(summary(ols.stemgpa))["adhd", "t value"]),
+  Partial_R2 = c(sens.sciid$sensitivity_stats$r2yd.x,
+                 sens.stemgpa$sensitivity_stats$r2yd.x),
+  RV_q1 = c(sens.sciid$sensitivity_stats$rv_q,
+            sens.stemgpa$sensitivity_stats$rv_q),
+  RV_q1_alpha05 = c(sens.sciid$sensitivity_stats$rv_qa,
+                    sens.stemgpa$sensitivity_stats$rv_qa)
+) %>% mutate(across(where(is.numeric), ~ round(., 4)))
+
+sens_summary %>% kable(caption = "Sensitivity to Unmeasured Confounding (sensemakr)")
+
+```
+
+### 6.2 Propensity Score Overlap & Trimming Sensitivity
+
+```{r, message=FALSE, warning=FALSE}
+run_overlap_sens <- function(df_fc, Y, label) {
+
+  fcb <- fairness_cookbook(
+    data = as.data.frame(df_fc), X = X, Z = Z, W = W, Y = Y,
+    x0 = 0, x1 = 1, method = "debiasing"
+  )
+
+  scores <- fcb$pw[["px_zw"]][[2]]
+  eps_seq <- quantile(pmin(scores, 1 - scores), probs = 1:5 / 100)
+
+  eps_sens <- cbind(summary(fcb)$measures, eps = 0, quant = 0)
+
+  for (i in seq_along(eps_seq)) {
+    eps <- eps_seq[i]
+    o_idx <- which(pmin(scores, 1 - scores) > eps)
+
+    fcb_trim <- fairness_cookbook(
+      data = as.data.frame(df_fc[o_idx, ]), X = X, Z = Z, W = W, Y = Y,
+      x0 = 0, x1 = 1, method = "debiasing"
+    )
+
+    eps_sens <- rbind(
+      eps_sens,
+      cbind(summary(fcb_trim)$measures, eps = eps, quant = i / 100)
+    )
+  }
+
+  eps_sens <- eps_sens[eps_sens$measure %in% c("tv", "ctfde", "ctfse", "ctfie"), ]
+  eps_sens[eps_sens$measure %in% c("ctfse", "ctfie"), ]$value <-
+    -eps_sens[eps_sens$measure %in% c("ctfse", "ctfie"), ]$value
+
+  xlabz <- c(ctfse = "Confounded", ctfie = "Indirect",
+             ctfde = "Direct", tv = "Total Variation")
+  eps_sens$measure <- factor(eps_sens$measure,
+                             levels = c("ctfse", "ctfie", "ctfde", "tv"))
+  levels(eps_sens$measure) <- xlabz
+  eps_sens$Dataset <- label
+  eps_sens
+}
+
+overlap.sciid   <- run_overlap_sens(fc.sciid, Y1, "Science Identity")
+overlap.stemgpa <- run_overlap_sens(fc.stemgpa, Y2, "STEM GPA")
+overlap_all     <- rbind(overlap.sciid, overlap.stemgpa)
+
+overlap_plot <- ggplot(overlap_all, aes(x = quant, y = value, color = Dataset, fill = Dataset)) +
+  geom_line() + geom_point() +
+  geom_ribbon(aes(ymin = value - 1.96 * sd, ymax = value + 1.96 * sd),
+              linewidth = 0, alpha = 0.3) +
+  theme_bw() +
+  facet_wrap(~ measure, scales = "free_y") +
+  ylab("Effect Estimate") + xlab("Percentile Trimming Threshold") +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 11),
+    strip.text = element_text(size = 11),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 11),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(labels = scales::percent) +
+  scale_color_manual(values = c("Science Identity" = "#2774AE", "STEM GPA" = "#FFD100")) +
+  scale_fill_manual(values = c("Science Identity" = "#2774AE", "STEM GPA" = "#FFD100")) +
+  geom_hline(yintercept = 0, color = "gray", linetype = "dashed")
+
+#ggsave("Fig4.overlap_sensitivity.png", overlap_plot, width = 8, height = 5, dpi = 400)
+```
