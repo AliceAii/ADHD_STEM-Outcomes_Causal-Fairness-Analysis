@@ -66,7 +66,7 @@ zeallot, data.table, skimr
 
 ### Data
 
-This study uses data from the [High School Longitudinal Study of 2009 (HSLS:09)](https://nces.ed.gov/surveys/hsls09/) administered by the National Center for Education Statistics (NCES). Access requires a restricted-use data license.
+This study uses data from the [High School Longitudinal Study of 2009 (HSLS:09)](https://nces.ed.gov/surveys/hsls09/) administered by the National Center for Education Statistics (NCES). 
 
 ## References
 
